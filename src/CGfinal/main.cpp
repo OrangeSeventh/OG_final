@@ -10,6 +10,9 @@
 #include <geometry/PlaneGeometry.h>
 #include <geometry/SphereGeometry.h>
 
+#include <cstdlib> // 用于随机数
+#include <ctime>   // 用于随机数种子
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <tool/stb_image.h>
 
@@ -20,6 +23,8 @@ void mouse_callback(GLFWwindow *window, double xpos, double ypos);
 void processInput(GLFWwindow *window);
 unsigned int loadTexture(char const *path);
 unsigned int loadCubemap(vector<std::string> faces);
+bool showStartWindow = true; // 是否显示游戏开始提示窗口
+
 
 // 跳跃逻辑
 bool isJumping = false;
@@ -27,6 +32,37 @@ float jumpStartTime = 0.0f;
 float jumpDuration = 1.0f; // 跳跃总时长
 float maxJumpHeight = 2.0f; // 最大跳跃高度
 
+float lastKeyPressTime = 0.0f; // 上一次按键时间
+float keyPressCooldown = 0.2f; // 冷却时间（秒）
+
+float randomFloat(float min, float max) {
+    return min + static_cast<float>(rand()) / static_cast<float>(RAND_MAX / (max - min));
+}
+
+std::vector<glm::vec3> Camera::detectedGrassPositions; // 定义静态变量
+
+// 定义草丛生成范围
+std::vector<glm::vec3> grassPositions; // 草丛位置
+float roadWidth = 1.8f;   // 道路宽度的一半
+float roadLength = 35.0f; // 道路长度
+int grassCount = 5;      // 草丛数量
+
+
+void generateRandomGrassPositions(std::vector<glm::vec3> &grassPositions, float roadWidth, float roadLength, int grassCount) {
+    grassPositions.clear(); // 清空之前的草丛位置
+
+    // // 动态设置随机数种子
+    // srand(static_cast<unsigned int>(time(0)) + static_cast<unsigned int>(glfwGetTime() * 1000));
+    unsigned int seed = static_cast<unsigned int>(time(0)) + static_cast<unsigned int>(glfwGetTime() * 1000);
+    srand(seed); // 动态设置种子
+    // std::cout << "Seed: " << seed << std::endl; // 打印种子值
+
+    for (int i = 0; i < grassCount; i++) {
+        float x = randomFloat(-roadWidth, roadWidth); // 随机生成 x 坐标
+        float z = randomFloat(0.0f, -roadLength);     // 随机生成 z 坐标
+        grassPositions.push_back(glm::vec3(x, 0.5f, z)); // 固定高度为 0.5
+    }
+}
 
 void drawSkyBox(Shader shader, BoxGeometry geometry, unsigned int cubeMap);
 
@@ -55,6 +91,11 @@ using namespace std;
 
 int main(int argc, char *argv[])
 {
+
+  // 修改窗口分辨率为更大的尺寸
+  SCREEN_WIDTH = 1600;
+  SCREEN_HEIGHT = 900;
+  
   Shader::dirName = argv[1];
   glfwInit();
   // 设置主要和次要版本
@@ -74,6 +115,21 @@ int main(int argc, char *argv[])
     glfwTerminate();
     return -1;
   }
+
+  // 获取屏幕分辨率以实现窗口居中
+  GLFWmonitor *monitor = glfwGetPrimaryMonitor(); // 获取主显示器
+  const GLFWvidmode *mode = glfwGetVideoMode(monitor); // 获取显示器的视频模式
+  int screenWidth = mode->width;  // 屏幕宽度
+  int screenHeight = mode->height; // 屏幕高度
+
+  // 计算窗口居中位置
+  int windowPosX = (screenWidth - SCREEN_WIDTH) / 2;
+  int windowPosY = (screenHeight - SCREEN_HEIGHT) / 2;
+
+  // 将窗口移动到计算出的居中位置
+  glfwSetWindowPos(window, windowPosX, windowPosY);
+
+
   glfwMakeContextCurrent(window);
 
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
@@ -81,6 +137,9 @@ int main(int argc, char *argv[])
     std::cout << "Failed to initialize GLAD" << std::endl;
     return -1;
   }
+
+  // 设置视口
+  glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
 
   // -----------------------
   // 创建imgui上下文
@@ -143,9 +202,13 @@ int main(int argc, char *argv[])
   glm::vec3 lightPosition = glm::vec3(1.0, 2.5, 2.0); // 光照位置
 
   // 设置平行光光照属性
-  sceneShader.setVec3("directionLight.ambient", 0.6f, 0.6f, 0.6f);
-  sceneShader.setVec3("directionLight.diffuse", 0.9f, 0.9f, 0.9f); // 将光照调暗了一些以搭配场景
-  sceneShader.setVec3("directionLight.specular", 1.0f, 1.0f, 1.0f);
+  sceneShader.setVec3("directionLight.direction", -0.1, -1.0f, -0.1f);  // 更接近平行
+  sceneShader.setVec3("directionLight.ambient", 0.3f, 0.3f, 0.3f);       // 增强环境光分量
+  sceneShader.setVec3("directionLight.diffuse", 1.0f, 1.0f, 1.0f);       // 增强漫反射
+  sceneShader.setVec3("directionLight.specular", 1.0f, 1.0f, 1.0f);      // 增强镜面反射
+
+  // 全局环境光设置（暖白色光）
+  sceneShader.setVec3("globalAmbient", 0.5f, 0.5f, 0.5f);
 
   // 设置衰减
   sceneShader.setFloat("light.constant", 1.0f);
@@ -165,16 +228,27 @@ int main(int argc, char *argv[])
       glm::vec3(0.0f, 0.0f, 1.0f),
       glm::vec3(0.0f, 1.0f, 0.0f)};
 
-  // 草的位置
-  vector<glm::vec3> grassPositions{
-      glm::vec3(-1.5f, 0.5f, -0.48f),
-      glm::vec3(1.5f, 0.5f, 0.51f),
-      glm::vec3(0.0f, 0.5f, 0.7f),
-      glm::vec3(-0.3f, 0.5f, -2.3f),
-      glm::vec3(0.5f, 0.5f, -0.6f)};
+
+  // 设置随机数种子
+  srand(static_cast<unsigned>(time(0)));
+
+  // 清空草丛位置
+  vector<glm::vec3> grassPositions;
+
+
+
+  // 初始化草丛位置
+  generateRandomGrassPositions(grassPositions, roadWidth, roadLength, grassCount);
+  Camera::detectedGrassPositions = grassPositions; // 更新草丛位置到Camera
 
   // 天空盒贴图
   vector<string> faces{
+      // "./src/CGfinal/skybox/front.jpg",
+      // "./src/CGfinal/skybox/back.jpg",
+      // "./src/CGfinal/skybox/up.jpg",
+      // "./src/CGfinal/skybox/down.jpg",
+      // "./src/CGfinal/skybox/left.jpg",
+      // "./src/CGfinal/skybox/right.jpg"};
       "./static/texture/Park3Med/px.jpg",
       "./static/texture/Park3Med/nx.jpg",
       "./static/texture/Park3Med/py.jpg",
@@ -192,7 +266,8 @@ int main(int argc, char *argv[])
     deltaTime = currentFrame - lastTime;
     lastTime = currentFrame;
 
-
+    // 更新自动移动逻辑
+    camera.UpdateAutoMove(deltaTime, currentFrame, grassPositions);
 
     // 跳跃逻辑
     if (camera.IsJumping)
@@ -285,12 +360,13 @@ int main(int argc, char *argv[])
     // *****************************************
 
     sceneShader.use();
+    sceneShader.setInt("textureMap", 0);
     factor = glfwGetTime();
     sceneShader.setFloat("factor", -factor * 0.3);
     sceneShader.setMat4("view", view);
     sceneShader.setMat4("projection", projection);
 
-    sceneShader.setVec3("directionLight.direction", lightPos); // 光源位置
+    sceneShader.setVec3("directionLight.direction", -0.2f, -1.0f, -0.3f); // 光源位置
     sceneShader.setVec3("viewPos", camera.Position);
 
     pointLightPositions[0].z = camZ;
@@ -332,8 +408,8 @@ int main(int argc, char *argv[])
     glm::mat4 leftCurbModel = glm::mat4(1.0f);
     leftCurbModel = glm::rotate(leftCurbModel, glm::radians(-90.0f), glm::vec3(1.0, 0.0, 0.0));
     leftCurbModel = glm::rotate(leftCurbModel, glm::radians(90.0f), glm::vec3(0.0, 0.0, 1.0));
-    leftCurbModel = glm::translate(leftCurbModel, glm::vec3(5.0, 0.8 / 2, 0.0));
-    leftCurbModel = glm::scale(leftCurbModel, glm::vec3(50.0, 0.8, 0.5));
+    leftCurbModel = glm::translate(leftCurbModel, glm::vec3(17.5, 2.2, 0.2));
+    leftCurbModel = glm::scale(leftCurbModel, glm::vec3(50.0, 0.8, 1.0));
 
     sceneShader.setFloat("uvScale", 1.0f);
     sceneShader.setMat4("model", leftCurbModel);
@@ -345,8 +421,8 @@ int main(int argc, char *argv[])
     glm::mat4 rightCurbModel = glm::mat4(1.0f);
     rightCurbModel = glm::rotate(rightCurbModel, glm::radians(-90.0f), glm::vec3(1.0, 0.0, 0.0));
     rightCurbModel = glm::rotate(rightCurbModel, glm::radians(90.0f), glm::vec3(0.0, 0.0, 1.0));
-    rightCurbModel = glm::translate(rightCurbModel, glm::vec3(-5.0, 0.8 / 2, 0.0));
-    rightCurbModel = glm::scale(rightCurbModel, glm::vec3(50.0, 0.8, 0.5));
+    rightCurbModel = glm::translate(rightCurbModel, glm::vec3(17.5, -2.2, 0.2));
+    rightCurbModel = glm::scale(rightCurbModel, glm::vec3(50.0, 0.8, 1.0));
 
     sceneShader.setFloat("uvScale", 1.0f);
     sceneShader.setMat4("model", rightCurbModel);
@@ -355,28 +431,28 @@ int main(int argc, char *argv[])
     glDrawElements(GL_TRIANGLES, containerGeometry.indices.size(), GL_UNSIGNED_INT, 0);
 
 
-    // 绘制砖块
+    // 绘制箱子
     // ----------------------------------------------------------
-    glBindTexture(GL_TEXTURE_2D, brickMap);
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(1.0, 1.0, -1.0));
-    model = glm::scale(model, glm::vec3(2.0, 2.0, 2.0));
+    // glBindTexture(GL_TEXTURE_2D, brickMap);
+    // model = glm::mat4(1.0f);
+    // model = glm::translate(model, glm::vec3(1.0, 1.0, -1.0));
+    // model = glm::scale(model, glm::vec3(2.0, 2.0, 2.0));
 
-    sceneShader.setFloat("uvScale", 1.0f);
-    sceneShader.setMat4("model", model);
+    // sceneShader.setFloat("uvScale", 1.0f);
+    // sceneShader.setMat4("model", model);
 
-    glBindVertexArray(containerGeometry.VAO);
-    glDrawElements(GL_TRIANGLES, containerGeometry.indices.size(), GL_UNSIGNED_INT, 0);
+    // glBindVertexArray(containerGeometry.VAO);
+    // glDrawElements(GL_TRIANGLES, containerGeometry.indices.size(), GL_UNSIGNED_INT, 0);
 
-    model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(-1.0, 0.5, 2.0));
-    sceneShader.setMat4("model", model);
+    // model = glm::mat4(1.0f);
+    // model = glm::translate(model, glm::vec3(-1.0, 0.5, 2.0));
+    // sceneShader.setMat4("model", model);
 
-    glBindVertexArray(containerGeometry.VAO);
-    glDrawElements(GL_TRIANGLES, containerGeometry.indices.size(), GL_UNSIGNED_INT, 0);
+    // glBindVertexArray(containerGeometry.VAO);
+    // glDrawElements(GL_TRIANGLES, containerGeometry.indices.size(), GL_UNSIGNED_INT, 0);
     // ----------------------------------------------------------
 
-    // 绘制草丛面板
+    // 绘制栅栏面板
     // ----------------------------------------------------------
     glBindVertexArray(grassGeometry.VAO);
     glBindTexture(GL_TEXTURE_2D, grassMap);
@@ -389,12 +465,16 @@ int main(int argc, char *argv[])
       sorted[distance] = grassPositions[i];
     }
 
-    for (std::map<float, glm::vec3>::reverse_iterator iterator = sorted.rbegin(); iterator != sorted.rend(); iterator++)
-    {
-      model = glm::mat4(1.0f);
-      model = glm::translate(model, iterator->second);
-      sceneShader.setMat4("model", model);
-      glDrawElements(GL_TRIANGLES, grassGeometry.indices.size(), GL_UNSIGNED_INT, 0);
+    // 从远到近绘制栅栏
+    for (std::map<float, glm::vec3>::reverse_iterator iterator = sorted.rbegin(); iterator != sorted.rend(); iterator++) {
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, iterator->second); // 设置栅栏位置
+
+        // 添加缩放变换，将高度缩小为原来的三分之二
+        model = glm::scale(model, glm::vec3(1.0f, 0.6667f, 1.0f)); // x 和 z 方向保持 1.0，y 缩小到 2/3
+        
+        sceneShader.setMat4("model", model);
+        glDrawElements(GL_TRIANGLES, grassGeometry.indices.size(), GL_UNSIGNED_INT, 0);
     }
     // ----------------------------------------------------------
 
@@ -426,14 +506,42 @@ int main(int argc, char *argv[])
     }
     // ************************************************************
 
+    if (showStartWindow) {
+    ImGui::SetNextWindowSize(ImVec2(400, 200)); // 设置窗口大小
+    ImGui::SetNextWindowPos(ImVec2(SCREEN_WIDTH / 2 - 200, SCREEN_HEIGHT / 2 - 100)); // 居中
+    ImGui::Begin("Start Game", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+    ImGui::Text("Press Enter to start game");
+    ImGui::End();
+    }
+
+    if (camera.GameOver) {
+    ImGui::SetNextWindowSize(ImVec2(300, 150)); // 设置窗口大小
+    ImGui::SetNextWindowPos(ImVec2(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 75)); // 居中
+    ImGui::Begin("Game Over", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+    ImGui::Text("Game Over!");
+    ImGui::Text("Press enter to restart");
+    ImGui::End();
+    }
+
+    if (camera.GameSuccess) {
+    ImGui::SetNextWindowSize(ImVec2(300, 150)); // 设置窗口大小
+    ImGui::SetNextWindowPos(ImVec2(SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 75)); // 居中
+    ImGui::Begin("Success", NULL, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+    ImGui::Text("Success!");
+    ImGui::Text("Press enter to restart");
+    ImGui::End();
+    }
+
+
+
     // 渲染 gui
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     glfwSwapBuffers(window);
     glfwPollEvents();
-  }
 
+  }
   containerGeometry.dispose();
   skyboxGeometry.dispose();
   groundGeometry.dispose();
@@ -451,20 +559,41 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 
 // 键盘输入监听
 void processInput(GLFWwindow *window)
-{
+{   
+    float currentTime = glfwGetTime();
+
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    // 跳跃时也允许移动
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        camera.ProcessKeyboard(FORWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        camera.ProcessKeyboard(BACKWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        camera.ProcessKeyboard(LEFT, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        camera.ProcessKeyboard(RIGHT, deltaTime);
 
+    if (showStartWindow) {
+        if (glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS) {
+            showStartWindow = false; // 隐藏开始窗口
+            return;
+        }
+    }
+
+    // 动态调整鼠标灵敏度，带冷却时间
+    if (currentTime - lastKeyPressTime > keyPressCooldown)
+    {
+        if (glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) // 小键盘加号
+        {
+            camera.MouseSensitivity += 0.02f;
+            lastKeyPressTime = currentTime; // 更新按键时间
+        }
+        if (glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) // 小键盘减号
+        {
+            camera.MouseSensitivity -= 0.02f;
+            lastKeyPressTime = currentTime; // 更新按键时间
+        }
+    }
+
+
+    // 限制灵敏度范围
+    if (camera.MouseSensitivity < 0.01f)
+        camera.MouseSensitivity = 0.01f;
+    if (camera.MouseSensitivity > 1.0f)
+        camera.MouseSensitivity = 1.0f;
 
     // 空格触发跳跃
     if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && camera.CanJump())
@@ -472,6 +601,54 @@ void processInput(GLFWwindow *window)
         camera.StartJump();
         jumpStartTime = glfwGetTime(); // 记录跳跃开始时间
     }
+
+     // Enter 键触发自动移动
+    if (glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS && !Camera::IsAutoMoving)
+    {   
+        if (camera.GameOver || camera.GameSuccess) {
+        // 重置游戏状态
+        camera.GameOver = false;
+        camera.GameSuccess = false;
+        camera.ResetToStartPosition();
+        // 重新生成草丛位置
+        generateRandomGrassPositions(grassPositions, roadWidth, roadLength, grassCount);
+        Camera::detectedGrassPositions = grassPositions; // 更新草丛位置到Camera
+        } else if (!Camera::IsAutoMoving) {
+            // 开始自动移动
+            camera.StartAutoMove(currentTime);
+            Camera::IsInitialPhase = false; // 退出初始阶段
+        }
+
+    }
+
+
+
+    // 自动移动期间的键盘限制
+    if (Camera::IsAutoMoving)
+    {
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            camera.ProcessKeyboard(LEFT, deltaTime, true);
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            camera.ProcessKeyboard(RIGHT, deltaTime, true);
+        return; // 跳过其他键盘逻辑
+    }
+
+
+    // 禁用前后移动逻辑
+    if (!Camera::IsInitialPhase && !Camera::IsAutoMoving) // 自动移动结束后，允许前后移动
+    {
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            camera.ProcessKeyboard(FORWARD, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            camera.ProcessKeyboard(BACKWARD, deltaTime);
+        camera.LimitYaw = false; // 自动移动结束后解除限制
+    }
+
+    // 始终允许左右移动
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        camera.ProcessKeyboard(LEFT, deltaTime);
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        camera.ProcessKeyboard(RIGHT, deltaTime);
 }
 
 // 鼠标移动监听

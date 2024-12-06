@@ -44,8 +44,10 @@ struct SpotLight {
 uniform DirectionLight directionLight;
 uniform PointLight pointLights[NR_POINT_LIGHTS];
 uniform SpotLight spotLight;
+uniform vec3 globalAmbient; // 全局环境光
 
 uniform sampler2D brickMap; // 贴图
+uniform sampler2D textureMap; // 通用纹理采样器
 
 in vec2 outTexCoord;
 in vec3 outNormal;
@@ -64,19 +66,27 @@ void main() {
   vec3 viewDir = normalize(viewPos - outFragPos);
   vec3 normal = normalize(outNormal);
 
+  // 初始化结果为全局环境光
+  vec3 result = vec3(0.0);
+
   // 定向光照
-  vec3 result = CalcDirectionLight(directionLight, normal, viewDir);
+  result += CalcDirectionLight(directionLight, normal, viewDir);
 
   // 点光源
   for(int i = 0; i < NR_POINT_LIGHTS; i++) {
     result += CalcPointLight(pointLights[i], normal, outFragPos, viewDir);
   }
 
-  vec4 texMap = texture(brickMap, outTexCoord);
+  // 添加全局环境光
+  result += globalAmbient;
 
+  vec4 texMap = texture(textureMap, outTexCoord);
+  texMap.rgb *= 5.0; // 将 1.2 调整为适当的值
   vec4 color = vec4(result, 1.0) * texMap;
 
-  FragColor = vec4(color);
+  FragColor = color;
+  float gamma = 3.0;
+  FragColor.rgb = pow(FragColor.rgb, vec3(1.0/gamma));
 }
 
 // 计算定向光
@@ -98,19 +108,19 @@ vec3 CalcDirectionLight(DirectionLight light, vec3 normal, vec3 viewDir) {
 vec3 CalcPointLight(PointLight light, vec3 normal, vec3 fragPos, vec3 viewDir) {
   vec3 lightDir = normalize(light.position - fragPos);
     // 漫反射着色
-  float diff = max(dot(normal, lightDir), 0.0);
+  float diff = max(dot(normal, lightDir), 0.0) * 0.3; // 减弱漫反射
     // 镜面光着色
   vec3 reflectDir = reflect(-lightDir, normal);
-  float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+  float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0) * 0.1; // 减弱镜面反射
     // 衰减
   float distance = length(light.position - fragPos);
   float attenuation = 1.0 / (light.constant + light.linear * distance +
     light.quadratic * (distance * distance));    
     // 合并结果
-  vec3 ambient = light.ambient;
+  vec3 ambient = light.ambient * 0.2; // 减弱点光源环境光
   vec3 diffuse = light.diffuse * diff;
   vec3 specular = light.specular * spec;
-  ambient *= attenuation;
+  // ambient *= attenuation;
   diffuse *= attenuation;
   specular *= attenuation;
   return (ambient + diffuse + specular);
